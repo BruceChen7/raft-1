@@ -85,6 +85,7 @@ func (r *Raft) runFSM() {
 		}()
 
 		switch req.log.Type {
+         // 请求的
 		case LogCommand:
 			start := time.Now()
 			resp = r.fsm.Apply(req.log)
@@ -213,6 +214,7 @@ func (r *Raft) runFSM() {
 
 	for {
 		select {
+        //  获取
 		case ptr := <-r.fsmMutateCh:
 			switch req := ptr.(type) {
 			case []*commitTuple:

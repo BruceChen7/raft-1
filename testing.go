@@ -761,6 +761,7 @@ func makeCluster(t *testing.T, opts *MakeClusterOpts) *cluster {
 			c.FailNowf("NewRaft failed: %v", err)
 		}
 
+        // 注册一个观察者
 		raft.RegisterObserver(NewObserver(c.observationCh, false, nil))
 		if err != nil {
 			c.FailNowf("RegisterObserver failed: %v", err)

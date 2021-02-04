@@ -86,6 +86,7 @@ func (or *Observer) GetNumDropped() uint64 {
 }
 
 // RegisterObserver registers a new observer.
+// 注册观察者
 func (r *Raft) RegisterObserver(or *Observer) {
 	r.observersLock.Lock()
 	defer r.observersLock.Unlock()

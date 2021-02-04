@@ -141,7 +141,9 @@ func (r *raftState) setLastApplied(index uint64) {
 // starting and incrementing, and exiting and decrementing.
 func (r *raftState) goFunc(f func()) {
 	r.routinesGroup.Add(1)
+    // 用来管理生成的go routine
 	go func() {
+        // 一个goroutine池结束
 		defer r.routinesGroup.Done()
 		f()
 	}()

@@ -137,6 +137,7 @@ func (r *Raft) run() {
 		// Enter into a sub-FSM
 		switch r.getState() {
 		case Follower:
+            // 运行为follower
 			r.runFollower()
 		case Candidate:
 			r.runCandidate()
@@ -158,10 +159,12 @@ func (r *Raft) runFollower() {
 		case rpc := <-r.rpcCh:
 			r.processRPC(rpc)
 
+        // 配置变化，作为follower直接拒绝
 		case c := <-r.configurationChangeCh:
 			// Reject any operations since we are not the leader
 			c.respond(ErrNotLeader)
 
+            // 直接返回错误
 		case a := <-r.applyCh:
 			// Reject any operations since we are not the leader
 			a.respond(ErrNotLeader)
@@ -187,15 +190,19 @@ func (r *Raft) runFollower() {
 
 		case <-heartbeatTimer:
 			// Restart the heartbeat timer
+            // 重新设置一个超市时间按
 			heartbeatTimer = randomTimeout(r.conf.HeartbeatTimeout)
 
 			// Check if we have had a successful contact
+            // 上次联系的时间
 			lastContact := r.LastContact()
+            // 没有超时，那么啥都不做
 			if time.Now().Sub(lastContact) < r.conf.HeartbeatTimeout {
 				continue
 			}
 
 			// Heartbeat failed! Transition to the candidate state
+            // 成为candidate状态
 			lastLeader := r.Leader()
 			r.setLeader("")
 
@@ -212,12 +219,14 @@ func (r *Raft) runFollower() {
 				}
 			} else {
 				r.logger.Warn("heartbeat timeout reached, starting election", "last-leader", lastLeader)
+                // 添加一次统计，用来统计状态变更
 				metrics.IncrCounter([]string{"raft", "transition", "heartbeat_timeout"}, 1)
 				r.setState(Candidate)
 				return
 			}
 
 		case <-r.shutdownCh:
+            // 直接关闭
 			return
 		}
 	}

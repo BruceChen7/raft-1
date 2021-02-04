@@ -163,6 +163,7 @@ type Raft struct {
 
 	// stable is a StableStore implementation for durable state
 	// It provides stable storage for many fields in raftState
+    // 稳定存储，用来存储raft节点信息
 	stable StableStore
 
 	// The transport layer we use
@@ -182,6 +183,7 @@ type Raft struct {
 
 	// List of observers and the mutex that protects them. The observers list
 	// is indexed by an artificial ID which is used for deregistration.
+    // 读写锁
 	observersLock sync.RWMutex
 	observers     map[uint64]*Observer
 
@@ -450,6 +452,7 @@ func NewRaft(conf *Config, fsm FSM, logs LogStore, stable StableStore, snaps Sna
 
 	// Ensure we have a LogOutput.
 	var logger hclog.Logger
+    // 配置logger
 	if conf.Logger != nil {
 		logger = conf.Logger
 	} else {
@@ -465,6 +468,7 @@ func NewRaft(conf *Config, fsm FSM, logs LogStore, stable StableStore, snaps Sna
 	}
 
 	// Try to restore the current term.
+    // 获取当前的任期
 	currentTerm, err := stable.GetUint64(keyCurrentTerm)
 	if err != nil && err.Error() != "not found" {
 		return nil, fmt.Errorf("failed to load current term: %v", err)
@@ -525,11 +529,13 @@ func NewRaft(conf *Config, fsm FSM, logs LogStore, stable StableStore, snaps Sna
 	}
 
 	// Initialize as a follower.
+    // 开始设置为follwer
 	r.setState(Follower)
 
 	// Start as leader if specified. This should only be used
 	// for testing purposes.
 	if conf.StartAsLeader {
+        // 设置leader
 		r.setState(Leader)
 		r.setLeader(r.localAddr)
 	}
@@ -539,6 +545,7 @@ func NewRaft(conf *Config, fsm FSM, logs LogStore, stable StableStore, snaps Sna
 	r.setLastLog(lastLog.Index, lastLog.Term)
 
 	// Attempt to restore a snapshot if there are any.
+    // 回复快照
 	if err := r.restoreSnapshot(); err != nil {
 		return nil, err
 	}
@@ -566,6 +573,7 @@ func NewRaft(conf *Config, fsm FSM, logs LogStore, stable StableStore, snaps Sna
 		return r, nil
 	}
 	// Start the background work.
+    // 执行不同的
 	r.goFunc(r.run)
 	r.goFunc(r.runFSM)
 	r.goFunc(r.runSnapshots)
