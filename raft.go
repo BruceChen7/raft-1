@@ -75,6 +75,7 @@ func getSnapshotVersion(protocolVersion ProtocolVersion) SnapshotVersion {
 // with an optional associated future that should be invoked.
 type commitTuple struct {
 	log    *Log
+    // 等到日志后提交的结果
 	future *logFuture
 }
 
@@ -651,6 +652,7 @@ func (r *Raft) leaderLoop() {
 		case <-r.leaderState.commitCh:
 			// Process the newly committed entries
 			oldCommitIndex := r.getCommitIndex()
+            // 胡偶去最新的提交记录
 			commitIndex := r.leaderState.commitment.getCommitIndex()
             // 多个节点同意提交，改变提交后的commitIndex
 			r.setCommitIndex(commitIndex)
@@ -660,6 +662,7 @@ func (r *Raft) leaderLoop() {
 			if r.configurations.latestIndex > oldCommitIndex &&
 				r.configurations.latestIndex <= commitIndex {
 				r.setCommittedConfiguration(r.configurations.latest, r.configurations.latestIndex)
+                // 没有投票权
 				if !hasVote(r.configurations.committed, r.localID) {
 					stepDown = true
 				}
@@ -667,6 +670,7 @@ func (r *Raft) leaderLoop() {
 
 			start := time.Now()
 			var groupReady []*list.Element
+            // key是日子索引
 			var groupFutures = make(map[uint64]*logFuture)
 			var lastIdxInGroup uint64
 
@@ -674,6 +678,7 @@ func (r *Raft) leaderLoop() {
 			for e := r.leaderState.inflight.Front(); e != nil; e = e.Next() {
 				commitLog := e.Value.(*logFuture)
 				idx := commitLog.log.Index
+                // 如果该日志没有被提交，那么直接退出
 				if idx > commitIndex {
 					// Don't go past the committed index
 					break
@@ -682,6 +687,7 @@ func (r *Raft) leaderLoop() {
 				// Measure the commit time
 				metrics.MeasureSince([]string{"raft", "commitTime"}, commitLog.dispatch)
 				groupReady = append(groupReady, e)
+                // 已经提交了
 				groupFutures[idx] = commitLog
 				lastIdxInGroup = idx
 			}
@@ -1143,7 +1149,9 @@ func (r *Raft) dispatchLogs(applyLogs []*logFuture) {
 // inflight logs.
 func (r *Raft) processLogs(index uint64, futures map[uint64]*logFuture) {
 	// Reject logs we've applied already
+    // 如果不是最新的，直接返回
 	lastApplied := r.getLastApplied()
+    // index是这次达成一致的index
 	if index <= lastApplied {
 		r.logger.Warn("skipping application of old log", "index", index)
 		return
@@ -1151,6 +1159,7 @@ func (r *Raft) processLogs(index uint64, futures map[uint64]*logFuture) {
 
 	applyBatch := func(batch []*commitTuple) {
 		select {
+        // 喂给状态机进行提交
 		case r.fsmMutateCh <- batch:
 		case <-r.shutdownCh:
 			for _, cl := range batch {
@@ -1161,6 +1170,7 @@ func (r *Raft) processLogs(index uint64, futures map[uint64]*logFuture) {
 		}
 	}
 
+    // 一次最多提交的日志数
 	batch := make([]*commitTuple, 0, r.conf.MaxAppendEntries)
 
 	// Apply all the preceding logs
@@ -1169,6 +1179,7 @@ func (r *Raft) processLogs(index uint64, futures map[uint64]*logFuture) {
 		// Get the log, either from the future or from our log store
 		future, futureOk := futures[idx]
 		if futureOk {
+            // 存在future，取future
 			preparedLog = r.prepareLog(&future.log, future)
 		} else {
 			l := new(Log)
@@ -1176,23 +1187,29 @@ func (r *Raft) processLogs(index uint64, futures map[uint64]*logFuture) {
 				r.logger.Error("failed to get log", "index", idx, "error", err)
 				panic(err)
 			}
+            // 取log
 			preparedLog = r.prepareLog(l, nil)
 		}
 
 		switch {
+        // 这里的future，交给applyBatch来填
 		case preparedLog != nil:
 			// If we have a log ready to send to the FSM add it to the batch.
 			// The FSM thread will respond to the future.
 			batch = append(batch, preparedLog)
 
 			// If we have filled up a batch, send it to the FSM
+            // 如果到达了最多的批量
 			if len(batch) >= r.conf.MaxAppendEntries {
 				applyBatch(batch)
+                // 重新分配
 				batch = make([]*commitTuple, 0, r.conf.MaxAppendEntries)
 			}
 
+        // 如果存在future
 		case futureOk:
 			// Invoke the future if given.
+            // 没有错误正常
 			future.respond(nil)
 		}
 	}
@@ -1214,6 +1231,7 @@ func (r *Raft) prepareLog(l *Log, future *logFuture) *commitTuple {
 		fallthrough
 
 	case LogCommand:
+        // 用来给状态机提交
 		return &commitTuple{l, future}
 
 	case LogConfiguration:
@@ -1225,6 +1243,7 @@ func (r *Raft) prepareLog(l *Log, future *logFuture) *commitTuple {
 	case LogRemovePeerDeprecated:
 	case LogNoop:
 		// Ignore the no-op
+        // 什么都不做
 
 	default:
 		panic(fmt.Errorf("unrecognized log type: %#v", l))
@@ -1422,13 +1441,16 @@ func (r *Raft) appendEntries(rpc RPC, a *AppendEntriesRequest) {
 	}
 
 	// Update the commit index
+    // 如果leader的提交记录大于本机器的提交记录
 	if a.LeaderCommitIndex > 0 && a.LeaderCommitIndex > r.getCommitIndex() {
 		start := time.Now()
 		idx := min(a.LeaderCommitIndex, r.getLastIndex())
+        // 设置当前commmit id
 		r.setCommitIndex(idx)
 		if r.configurations.latestIndex <= idx {
 			r.setCommittedConfiguration(r.configurations.latest, r.configurations.latestIndex)
 		}
+        // 用来提交给状态机
 		r.processLogs(idx, nil)
 		metrics.MeasureSince([]string{"raft", "rpc", "appendEntries", "processLogs"}, start)
 	}

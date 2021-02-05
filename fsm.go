@@ -69,6 +69,7 @@ type FSMSnapshot interface {
 func (r *Raft) runFSM() {
 	var lastIndex, lastTerm uint64
 
+    // 开启批量提交
 	batchingFSM, batchingEnabled := r.fsm.(BatchingFSM)
 	configStore, configStoreEnabled := r.fsm.(ConfigurationStore)
 
@@ -79,13 +80,14 @@ func (r *Raft) runFSM() {
 		defer func() {
 			// Invoke the future if given
 			if req.future != nil {
+                // 填充响应future内容
 				req.future.response = resp
 				req.future.respond(nil)
 			}
 		}()
 
 		switch req.log.Type {
-         // 请求的
+         // 请求的命令
 		case LogCommand:
 			start := time.Now()
 			resp = r.fsm.Apply(req.log)
@@ -104,6 +106,7 @@ func (r *Raft) runFSM() {
 		}
 
 		// Update the indexes
+        // 更新提交最新的Index
 		lastIndex = req.log.Index
 		lastTerm = req.log.Term
 	}
@@ -111,6 +114,7 @@ func (r *Raft) runFSM() {
 	commitBatch := func(reqs []*commitTuple) {
 		if !batchingEnabled {
 			for _, ct := range reqs {
+                // 一个个提交
 				commitSingle(ct)
 			}
 			return
@@ -214,7 +218,8 @@ func (r *Raft) runFSM() {
 
 	for {
 		select {
-        //  获取
+        // 将数据和状态提交到状态机
+        // 在processLogs中写入数据
 		case ptr := <-r.fsmMutateCh:
 			switch req := ptr.(type) {
 			case []*commitTuple:

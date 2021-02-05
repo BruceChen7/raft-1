@@ -505,6 +505,7 @@ func NewRaft(conf *Config, fsm FSM, logs LogStore, stable StableStore, snaps Sna
 		applyCh:               make(chan *logFuture),
 		conf:                  *conf,
 		fsm:                   fsm,
+        // 是一个有buffer的缓存
 		fsmMutateCh:           make(chan interface{}, 128),
 		fsmSnapshotCh:         make(chan *reqSnapshotFuture),
 		leaderCh:              make(chan bool),
@@ -702,6 +703,7 @@ func (r *Raft) ApplyLog(log Log, timeout time.Duration) ApplyFuture {
 			Extensions: log.Extensions,
 		},
 	}
+    // 初始化logFuture
 	logFuture.init()
 
 	select {
@@ -750,6 +752,7 @@ func (r *Raft) Barrier(timeout time.Duration) Future {
 func (r *Raft) VerifyLeader() Future {
 	metrics.IncrCounter([]string{"raft", "verify_leader"}, 1)
 	verifyFuture := &verifyFuture{}
+    // 初始化future
 	verifyFuture.init()
 	select {
 	case <-r.shutdownCh:

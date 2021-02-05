@@ -91,10 +91,12 @@ type deferError struct {
 
 func (d *deferError) init() {
     // buffered channel
+    // 注意这种用法
 	d.errCh = make(chan error, 1)
 }
 
 func (d *deferError) Error() error {
+    // 如果本身已经有了err
 	if d.err != nil {
 		// Note that when we've received a nil error, this
 		// won't trigger, but the channel is closed after
@@ -104,7 +106,9 @@ func (d *deferError) Error() error {
 	if d.errCh == nil {
 		panic("waiting for response on nil channel")
 	}
+    // 读取从channel发过来的error
 	d.err = <-d.errCh
+   //  并返回
 	return d.err
 }
 
@@ -112,6 +116,7 @@ func (d *deferError) respond(err error) {
 	if d.errCh == nil {
 		return
 	}
+    // 已经写入了，就不要再写入了
 	if d.responded {
 		return
 	}
