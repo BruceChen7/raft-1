@@ -567,13 +567,14 @@ func NewRaft(conf *Config, fsm FSM, logs LogStore, stable StableStore, snaps Sna
 	// Setup a heartbeat fast-path to avoid head-of-line
 	// blocking where possible. It MUST be safe for this
 	// to be called concurrently with a blocking RPC.
+    // 处理心跳逻辑，必须在main goroutine中执行
 	trans.SetHeartbeatHandler(r.processHeartbeat)
 
 	if conf.skipStartup {
 		return r, nil
 	}
 	// Start the background work.
-    // 执行不同的
+    // 执行不同的逻辑
 	r.goFunc(r.run)
 	r.goFunc(r.runFSM)
 	r.goFunc(r.runSnapshots)

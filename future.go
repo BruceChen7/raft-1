@@ -90,6 +90,7 @@ type deferError struct {
 }
 
 func (d *deferError) init() {
+    // buffered channel
 	d.errCh = make(chan error, 1)
 }
 
@@ -114,6 +115,7 @@ func (d *deferError) respond(err error) {
 	if d.responded {
 		return
 	}
+    // 写完了，才关掉
 	d.errCh <- err
 	close(d.errCh)
 	d.responded = true
@@ -228,6 +230,7 @@ type verifyFuture struct {
 	deferError
 	notifyCh   chan *verifyFuture
 	quorumSize int
+    // 投票数
 	votes      int
 	voteLock   sync.Mutex
 }
@@ -271,6 +274,7 @@ func (v *verifyFuture) vote(leader bool) {
 
 	if leader {
 		v.votes++
+        // 才吧结果通知
 		if v.votes >= v.quorumSize {
 			v.notifyCh <- v
 			v.notifyCh = nil

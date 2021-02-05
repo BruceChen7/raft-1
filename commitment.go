@@ -32,6 +32,7 @@ type commitment struct {
 func newCommitment(commitCh chan struct{}, configuration Configuration, startIndex uint64) *commitment {
 	matchIndexes := make(map[ServerID]uint64)
 	for _, server := range configuration.Servers {
+        // 如果有投票权，初始化
 		if server.Suffrage == Voter {
 			matchIndexes[server.ID] = 0
 		}
@@ -74,7 +75,9 @@ func (c *commitment) getCommitIndex() uint64 {
 func (c *commitment) match(server ServerID, matchIndex uint64) {
 	c.Lock()
 	defer c.Unlock()
+    // 上一条日志有投票，并且这次index大于上次index
 	if prev, hasVote := c.matchIndexes[server]; hasVote && matchIndex > prev {
+        // 更新该node 对应的matchIndex
 		c.matchIndexes[server] = matchIndex
 		c.recalculate()
 	}
@@ -89,8 +92,10 @@ func (c *commitment) recalculate() {
 
 	matched := make([]uint64, 0, len(c.matchIndexes))
 	for _, idx := range c.matchIndexes {
+        // 将idx append
 		matched = append(matched, idx)
 	}
+    // 排序
 	sort.Sort(uint64Slice(matched))
 	quorumMatchIndex := matched[(len(matched)-1)/2]
 

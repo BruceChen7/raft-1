@@ -11,7 +11,9 @@ import (
 )
 
 const (
+    // 最大失败12次
 	maxFailureScale = 12
+    // 10 ms
 	failureWait     = 10 * time.Millisecond
 )
 
@@ -96,6 +98,7 @@ func (s *followerReplication) notifyAll(leader bool) {
 	// Clear the waiting notifies minimizing lock time
 	s.notifyLock.Lock()
 	n := s.notify
+    // 重新更新make一个新的
 	s.notify = make(map[*verifyFuture]struct{})
 	s.notifyLock.Unlock()
 
@@ -123,6 +126,7 @@ func (s *followerReplication) LastContact() time.Time {
 // setLastContact sets the last contact to the current time.
 func (s *followerReplication) setLastContact() {
 	s.lastContactLock.Lock()
+    // 更新时间
 	s.lastContact = time.Now()
 	s.lastContactLock.Unlock()
 }
@@ -133,6 +137,7 @@ func (r *Raft) replicate(s *followerReplication) {
 	// Start an async heartbeating routing
 	stopHeartbeat := make(chan struct{})
 	defer close(stopHeartbeat)
+    // 心跳rpc
 	r.goFunc(func() { r.heartbeat(s, stopHeartbeat) })
 
 RPC:
@@ -142,6 +147,7 @@ RPC:
 		case maxIndex := <-s.stopCh:
 			// Make a best effort to replicate up to this index
 			if maxIndex > 0 {
+                // 尽可能的复制过去
 				r.replicateTo(s, maxIndex)
 			}
 			return
@@ -153,7 +159,7 @@ RPC:
 			} else {
 				deferErr.respond(fmt.Errorf("replication failed"))
 			}
-		case <-s.triggerCh:
+		case <-s.triggerCh: // 当节点作为leader, 通知该goroutine 复制
 			lastLogIdx, _ := r.getLastLog()
 			shouldStop = r.replicateTo(s, lastLogIdx)
 		// This is _not_ our heartbeat mechanism but is to ensure
@@ -180,6 +186,7 @@ PIPELINE:
 	// Replicates using a pipeline for high performance. This method
 	// is not able to gracefully recover from errors, and so we fall back
 	// to standard mode on failure.
+    // 开始pipeline模式
 	if err := r.pipelineReplicate(s); err != nil {
 		if err != ErrPipelineReplicationNotSupported {
 			r.logger.Error("failed to start pipeline replication to", "peer", s.peer, "error", err)
@@ -198,8 +205,10 @@ func (r *Raft) replicateTo(s *followerReplication, lastIndex uint64) (shouldStop
 	var start time.Time
 START:
 	// Prevent an excessive retry rate on errors
+    // 之前有失败
 	if s.failures > 0 {
 		select {
+        // 指数退让的重试
 		case <-time.After(backoff(failureWait, s.failures, maxFailureScale)):
 		case <-r.shutdownCh:
 		}
@@ -214,14 +223,18 @@ START:
 
 	// Make the RPC call
 	start = time.Now()
+    // rpc调用失败
+    // 直接返回
 	if err := r.trans.AppendEntries(s.peer.ID, s.peer.Address, &req, &resp); err != nil {
 		r.logger.Error("failed to appendEntries to", "peer", s.peer, "error", err)
 		s.failures++
 		return
 	}
+    // 添加统计项
 	appendStats(string(s.peer.ID), start, float32(len(req.Entries)))
 
 	// Check for a newer term, stop running
+    // 直接返回stop
 	if resp.Term > req.Term {
 		r.handleStaleTerm(s)
 		return true
@@ -360,6 +373,7 @@ func (r *Raft) sendLatestSnapshot(s *followerReplication) (bool, error) {
 // since that routine could potentially be blocked on disk IO.
 func (r *Raft) heartbeat(s *followerReplication, stopCh chan struct{}) {
 	var failures uint64
+    // 发起一个请求
 	req := AppendEntriesRequest{
 		RPCHeader: r.getRPCHeader(),
 		Term:      s.currentTerm,
@@ -370,8 +384,10 @@ func (r *Raft) heartbeat(s *followerReplication, stopCh chan struct{}) {
 		// Wait for the next heartbeat interval or forced notify
 		select {
 		case <-s.notifyCh:
+        // 100ms~200ms，默认配置是1s
 		case <-randomTimeout(r.conf.HeartbeatTimeout / 10):
 		case <-stopCh:
+            // 直接返回
 			return
 		}
 
@@ -384,7 +400,10 @@ func (r *Raft) heartbeat(s *followerReplication, stopCh chan struct{}) {
 			case <-stopCh:
 			}
 		} else {
+            // 上次有联系
+            // 将时间更新
 			s.setLastContact()
+            // 恢复为0
 			failures = 0
 			metrics.MeasureSince([]string{"raft", "replication", "heartbeat", string(s.peer.ID)}, start)
 			s.notifyAll(resp.Success)
