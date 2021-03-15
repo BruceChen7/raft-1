@@ -976,6 +976,7 @@ func (r *Raft) State() RaftState {
 // the leader, and false if we lose it. The channel is not buffered,
 // and does not block on writes.
 func (r *Raft) LeaderCh() <-chan bool {
+    // 查看自己是否是channel
 	return r.leaderCh
 }
 

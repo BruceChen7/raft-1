@@ -81,6 +81,7 @@ type commitTuple struct {
 
 // leaderState is state that is used while we are a leader.
 type leaderState struct {
+    // 正在进行领导权的转移
 	leadershipTransferInProgress int32 // indicates that a leadership transfer is in progress.
 	commitCh                     chan struct{}
 	commitment                   *commitment
@@ -160,6 +161,7 @@ func (r *Raft) runFollower() {
 	for r.getState() == Follower {
 		select {
 		case rpc := <-r.rpcCh:
+            // 处理 rpc请求
 			r.processRPC(rpc)
 
         // 配置变化，作为follower直接拒绝
@@ -383,6 +385,7 @@ func (r *Raft) runLeader() {
 	metrics.IncrCounter([]string{"raft", "state", "leader"}, 1)
 
 	// Notify that we are the leader
+    // 通知别人自己是leader
 	asyncNotifyBool(r.leaderCh, true)
 
 	// Push to the notify channel if given
@@ -505,18 +508,22 @@ func (r *Raft) startStopReplication() {
 				stopCh:              make(chan uint64, 1),
                 // 带有buffer的chan
 				triggerCh:           make(chan struct{}, 1),
+                // buffer的channel
 				triggerDeferErrorCh: make(chan *deferError, 1),
+                // 获取集群节点任期
 				currentTerm:         r.getCurrentTerm(),
+                // 获取下次要replicate的index
 				nextIndex:           lastIdx + 1,
 				lastContact:         time.Now(),
 				notify:              make(map[*verifyFuture]struct{}),
-				notifyCh:            make(chan struct{}, 1),
+				notifyCh:            make(chan struct{}, 1), // 都是buffer的channel
 				stepDown:            r.leaderState.stepDown,
 			}
 			r.leaderState.replState[server.ID] = s
             // 每个server, 一个goroutine开始进行复制
 			r.goFunc(func() { r.replicate(s) })
             // 异步通知goroutine来复制
+            // 都是异步的
 			asyncNotifyCh(s.triggerCh)
 			r.observe(PeerObservation{Peer: server, Removed: false})
 		}
@@ -530,6 +537,7 @@ func (r *Raft) startStopReplication() {
 		}
 		// Replicate up to lastIdx and stop
 		r.logger.Info("removed peer, stopping replication", "peer", serverID, "last-index", lastIdx)
+        // 用来关闭该节点的复制
 		repl.stopCh <- lastIdx
 		close(repl.stopCh)
 		delete(r.leaderState.replState, serverID)
@@ -606,16 +614,19 @@ func (r *Raft) leaderLoop() {
 			go func() {
 				select {
 				case <-time.After(r.conf.ElectionTimeout):
+                    // 直接关闭stop
 					close(stopCh)
 					err := fmt.Errorf("leadership transfer timeout")
 					r.logger.Debug(err.Error())
 					future.respond(err)
+                    // 领导选举做完了
 					<-doneCh
 				case <-leftLeaderLoop:
 					close(stopCh)
 					err := fmt.Errorf("lost leadership during transfer (expected)")
 					r.logger.Debug(err.Error())
 					future.respond(nil)
+                    // 领导选举完成了
 					<-doneCh
 				case err := <-doneCh:
 					if err != nil {
@@ -647,6 +658,7 @@ func (r *Raft) leaderLoop() {
 				continue
 			}
 
+            // 开始领导选举
 			go r.leadershipTransfer(*id, *address, state, stopCh, doneCh)
 
 		case <-r.leaderState.commitCh:
@@ -862,6 +874,7 @@ func (r *Raft) leadershipTransfer(id ServerID, address ServerAddress, repl *foll
 	for atomic.LoadUint64(&repl.nextIndex) <= r.getLastIndex() {
 		err := &deferError{}
 		err.init()
+        // 写到buffer中
 		repl.triggerDeferErrorCh <- err
 		select {
 		case err := <-err.errCh:
@@ -1262,6 +1275,7 @@ func (r *Raft) processRPC(rpc RPC) {
 
 	switch cmd := rpc.Command.(type) {
 	case *AppendEntriesRequest:
+        // 用来投票
 		r.appendEntries(rpc, cmd)
 	case *RequestVoteRequest:
 		r.requestVote(rpc, cmd)

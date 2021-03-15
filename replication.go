@@ -98,12 +98,13 @@ func (s *followerReplication) notifyAll(leader bool) {
 	// Clear the waiting notifies minimizing lock time
 	s.notifyLock.Lock()
 	n := s.notify
-    // 重新更新make一个新的
+    // 重新更新，make一个新的
 	s.notify = make(map[*verifyFuture]struct{})
 	s.notifyLock.Unlock()
 
 	// Submit our votes
 	for v := range n {
+        // 投票
 		v.vote(leader)
 	}
 }
@@ -137,13 +138,14 @@ func (r *Raft) replicate(s *followerReplication) {
 	// Start an async heartbeating routing
 	stopHeartbeat := make(chan struct{})
 	defer close(stopHeartbeat)
-    // 心跳rpc
+    // 心跳请求
 	r.goFunc(func() { r.heartbeat(s, stopHeartbeat) })
 
 RPC:
 	shouldStop := false
 	for !shouldStop {
 		select {
+        // 获取最新的index
 		case maxIndex := <-s.stopCh:
 			// Make a best effort to replicate up to this index
 			if maxIndex > 0 {
@@ -198,6 +200,7 @@ PIPELINE:
 // replicateTo is a helper to replicate(), used to replicate the logs up to a
 // given last index.
 // If the follower log is behind, we take care to bring them up to date.
+// 返回是否停止复制
 func (r *Raft) replicateTo(s *followerReplication, lastIndex uint64) (shouldStop bool) {
 	// Create the base request
 	var req AppendEntriesRequest
@@ -234,8 +237,8 @@ START:
 	appendStats(string(s.peer.ID), start, float32(len(req.Entries)))
 
 	// Check for a newer term, stop running
-    // 直接返回stop
 	if resp.Term > req.Term {
+        // 处理任期失败
 		r.handleStaleTerm(s)
 		return true
 	}
