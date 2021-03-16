@@ -163,7 +163,7 @@ type Raft struct {
 
 	// stable is a StableStore implementation for durable state
 	// It provides stable storage for many fields in raftState
-    // 稳定存储，用来存储raft节点信息
+    // 稳定存储，用来存储raft log信息
 	stable StableStore
 
 	// The transport layer we use

@@ -1268,6 +1268,7 @@ func (r *Raft) prepareLog(l *Log, future *logFuture) *commitTuple {
 // processRPC is called to handle an incoming RPC request. This must only be
 // called from the main thread.
 func (r *Raft) processRPC(rpc RPC) {
+    // 获取rpc头
 	if err := r.checkRPCHeader(rpc); err != nil {
 		rpc.Respond(nil, err)
 		return
@@ -1275,9 +1276,10 @@ func (r *Raft) processRPC(rpc RPC) {
 
 	switch cmd := rpc.Command.(type) {
 	case *AppendEntriesRequest:
-        // 用来投票
+        // 用来append log
 		r.appendEntries(rpc, cmd)
 	case *RequestVoteRequest:
+        // 用来投票
 		r.requestVote(rpc, cmd)
 	case *InstallSnapshotRequest:
 		r.installSnapshot(rpc, cmd)
@@ -1332,6 +1334,7 @@ func (r *Raft) appendEntries(rpc RPC, a *AppendEntriesRequest) {
 	}()
 
 	// Ignore an older term
+    // 发过来的term小于自己本身的term
 	if a.Term < r.getCurrentTerm() {
 		return
 	}
@@ -1341,8 +1344,10 @@ func (r *Raft) appendEntries(rpc RPC, a *AppendEntriesRequest) {
 
 	if a.Term > r.getCurrentTerm() || r.getState() != Follower {
 		// Ensure transition to follower
+        // 设置自己是follower
 		r.setState(Follower)
 		r.setCurrentTerm(a.Term)
+        // 相应自己的term
 		resp.Term = a.Term
 	}
 
@@ -1416,7 +1421,7 @@ func (r *Raft) appendEntries(rpc RPC, a *AppendEntriesRequest) {
 					"from", entry.Index,
 					"to", lastLogIdx)
 
-                // 删除这段索引的日志
+                // 直接删除这段日志，以leader的为准
 				if err := r.logs.DeleteRange(entry.Index, lastLogIdx); err != nil {
 					r.logger.Error("failed to clear log suffix", "error", err)
 					return
@@ -1424,7 +1429,7 @@ func (r *Raft) appendEntries(rpc RPC, a *AppendEntriesRequest) {
 				if entry.Index <= r.configurations.latestIndex {
 					r.setLatestConfiguration(r.configurations.committed, r.configurations.committedIndex)
 				}
-                // 同样是新的日志
+                // 以leader发过来的请求为准
 				newEntries = a.Entries[i:]
 				break
 			}
@@ -1464,13 +1469,15 @@ func (r *Raft) appendEntries(rpc RPC, a *AppendEntriesRequest) {
 		if r.configurations.latestIndex <= idx {
 			r.setCommittedConfiguration(r.configurations.latest, r.configurations.latestIndex)
 		}
-        // 用来提交给状态机
+        // 用来提交给自己的状态机
 		r.processLogs(idx, nil)
 		metrics.MeasureSince([]string{"raft", "rpc", "appendEntries", "processLogs"}, start)
 	}
 
 	// Everything went well, set success
+    // 返回成功
 	resp.Success = true
+    // 更新心跳时间
 	r.setLastContact()
 	return
 }
@@ -1517,6 +1524,7 @@ func (r *Raft) requestVote(rpc RPC, req *RequestVoteRequest) {
 	// there is a known leader. But if the leader initiated a leadership transfer,
 	// vote!
 	candidate := r.trans.DecodePeer(req.Candidate)
+    // 票选是否合法
 	if leader := r.Leader(); leader != "" && leader != candidate && !req.LeadershipTransfer {
 		r.logger.Warn("rejecting vote request since we have a leader",
 			"from", candidate,
@@ -1525,6 +1533,7 @@ func (r *Raft) requestVote(rpc RPC, req *RequestVoteRequest) {
 	}
 
 	// Ignore an older term
+    // 直接返回false
 	if req.Term < r.getCurrentTerm() {
 		return
 	}
@@ -1533,8 +1542,10 @@ func (r *Raft) requestVote(rpc RPC, req *RequestVoteRequest) {
 	if req.Term > r.getCurrentTerm() {
 		// Ensure transition to follower
 		r.logger.Debug("lost leadership because received a requestVote with a newer term")
+        // 将自己设置为follower
 		r.setState(Follower)
 		r.setCurrentTerm(req.Term)
+        // 返回term为请求term
 		resp.Term = req.Term
 	}
 
@@ -1551,6 +1562,7 @@ func (r *Raft) requestVote(rpc RPC, req *RequestVoteRequest) {
 	}
 
 	// Check if we've voted in this election before
+    // 同一个任期，如果之前有投票过，并且候选人和之前投票的之相同，那么直接
 	if lastVoteTerm == req.Term && lastVoteCandBytes != nil {
 		r.logger.Info("duplicate requestVote for same term", "term", req.Term)
 		if bytes.Compare(lastVoteCandBytes, req.Candidate) == 0 {
@@ -1561,7 +1573,9 @@ func (r *Raft) requestVote(rpc RPC, req *RequestVoteRequest) {
 	}
 
 	// Reject if their term is older
+    // 确保包含了所有term的候选者才能成为leader
 	lastIdx, lastTerm := r.getLastEntry()
+    // 如果自己entry的任期比请求的任期还要大
 	if lastTerm > req.LastLogTerm {
 		r.logger.Warn("rejecting vote request since our last term is greater",
 			"candidate", candidate,

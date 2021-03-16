@@ -110,6 +110,7 @@ func (t *transport) sendRPC(target string, req interface{}, resp interface{}) er
 	if err := codec.NewEncoder(&buff, &codecHandle).Encode(req); err != nil {
 		return err
 	}
+    // 带缓冲的rpc channel
 	rpc := raft.RPC{RespChan: rc}
 	var reqVote raft.RequestVoteRequest
 	var timeoutNow raft.TimeoutNowRequest
