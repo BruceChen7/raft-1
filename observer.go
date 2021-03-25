@@ -107,6 +107,7 @@ func (r *Raft) observe(o interface{}) {
 	// registration / deregistration of observers.
 	r.observersLock.RLock()
 	defer r.observersLock.RUnlock()
+    // 遍历所有的观察者
 	for _, or := range r.observers {
 		// It's wasteful to do this in the loop, but for the common case
 		// where there are no observers we won't create any objects.
@@ -114,15 +115,18 @@ func (r *Raft) observe(o interface{}) {
 		if or.filter != nil && !or.filter(&ob) {
 			continue
 		}
+        // 没有通信的channel，直接过滤
 		if or.channel == nil {
 			continue
 		}
 		if or.blocking {
+            // 发送数据
 			or.channel <- ob
 			atomic.AddUint64(&or.numObserved, 1)
 		} else {
 			select {
 			case or.channel <- ob:
+                // 发送数据
 				atomic.AddUint64(&or.numObserved, 1)
 			default:
 				atomic.AddUint64(&or.numDropped, 1)

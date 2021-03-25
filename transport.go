@@ -7,6 +7,7 @@ import (
 
 // RPCResponse captures both a response and a potential error.
 type RPCResponse struct {
+    // 可以是任何对象
 	Response interface{}
 	Error    error
 }
@@ -15,6 +16,7 @@ type RPCResponse struct {
 type RPC struct {
 	Command  interface{}
 	Reader   io.Reader // Set only for InstallSnapshot
+    // 接收rpc response
 	RespChan chan<- RPCResponse
 }
 

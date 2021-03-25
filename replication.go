@@ -40,6 +40,7 @@ type followerReplication struct {
 
 	// nextIndex is the index of the next log entry to send to the follower,
 	// which may fall past the end of the log.
+    // 下一个要复制给follow的indeex
 	nextIndex uint64
 
 	// peer contains the network address and ID of the remote follower.
@@ -138,7 +139,7 @@ func (r *Raft) replicate(s *followerReplication) {
 	// Start an async heartbeating routing
 	stopHeartbeat := make(chan struct{})
 	defer close(stopHeartbeat)
-    // 心跳请求
+    // 一直复制
 	r.goFunc(func() { r.heartbeat(s, stopHeartbeat) })
 
 RPC:
@@ -152,6 +153,7 @@ RPC:
                 // 尽可能的复制过去
 				r.replicateTo(s, maxIndex)
 			}
+            // 改复制rpc停止
 			return
 		case deferErr := <-s.triggerDeferErrorCh:
 			lastLogIdx, _ := r.getLastLog()
@@ -227,7 +229,7 @@ START:
 	// Make the RPC call
 	start = time.Now()
     // rpc调用失败
-    // 直接返回
+    // 直接返回，这个是同步的
 	if err := r.trans.AppendEntries(s.peer.ID, s.peer.Address, &req, &resp); err != nil {
 		r.logger.Error("failed to appendEntries to", "peer", s.peer, "error", err)
 		s.failures++
@@ -238,7 +240,7 @@ START:
 
 	// Check for a newer term, stop running
 	if resp.Term > req.Term {
-        // 处理任期失败
+        // 处理任期过期的问题
 		r.handleStaleTerm(s)
 		return true
 	}
@@ -253,6 +255,7 @@ START:
 
 		// Clear any failures, allow pipelining
 		s.failures = 0
+        // 允许
 		s.allowPipeline = true
 	} else {
 		atomic.StoreUint64(&s.nextIndex, max(min(s.nextIndex-1, resp.LastLog+1), 1))
@@ -277,6 +280,7 @@ CHECK_MORE:
 	}
 
 	// Check if there are more logs to replicate
+    // 又开始复制
 	if atomic.LoadUint64(&s.nextIndex) <= lastIndex {
 		goto START
 	}
@@ -385,6 +389,7 @@ func (r *Raft) heartbeat(s *followerReplication, stopCh chan struct{}) {
 	var resp AppendEntriesResponse
 	for {
 		// Wait for the next heartbeat interval or forced notify
+        // 等待相关时间
 		select {
 		case <-s.notifyCh:
         // 100ms~200ms，默认配置是1s
@@ -602,6 +607,7 @@ func appendStats(peer string, start time.Time, logs float32) {
 func (r *Raft) handleStaleTerm(s *followerReplication) {
 	r.logger.Error("peer has newer term, stopping replication", "peer", s.peer)
 	s.notifyAll(false) // No longer leader
+    // 通知leader退出
 	asyncNotifyCh(s.stepDown)
 }
 

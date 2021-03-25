@@ -15,6 +15,7 @@ const (
 )
 
 func NewTestTransport(ttype int, addr ServerAddress) (ServerAddress, LoopbackTransport) {
+    // 在内存中的传输层
 	switch ttype {
 	case TTInmem:
 		return NewInmemTransport(addr)
@@ -32,10 +33,13 @@ func TestTransport_StartStop(t *testing.T) {
 	}
 }
 
+// 用来测试append rpc请求
+// 注意这种模拟rpc调用的思路
 func TestTransport_AppendEntries(t *testing.T) {
 	for ttype := 0; ttype < numTestTransports; ttype++ {
 		addr1, trans1 := NewTestTransport(ttype, "")
 		defer trans1.Close()
+        // 获取rpc请求
 		rpcCh := trans1.Consumer()
 
 		// Make the RPC request
@@ -53,6 +57,7 @@ func TestTransport_AppendEntries(t *testing.T) {
 			},
 			LeaderCommitIndex: 90,
 		}
+        // 响应请求
 		resp := AppendEntriesResponse{
 			Term:    4,
 			LastLog: 90,
@@ -60,17 +65,21 @@ func TestTransport_AppendEntries(t *testing.T) {
 		}
 
 		// Listen for a request
+        // 用来响应
 		go func() {
 			select {
 			case rpc := <-rpcCh:
+                // 获取rpc
 				// Verify the command
 				req := rpc.Command.(*AppendEntriesRequest)
 				if !reflect.DeepEqual(req, &args) {
 					t.Fatalf("command mismatch: %#v %#v", *req, args)
 				}
+                // rpc结果返回
 				rpc.Respond(&resp, nil)
 
 			case <-time.After(200 * time.Millisecond):
+                // 超时
 				t.Fatalf("timeout")
 			}
 		}()
@@ -79,15 +88,20 @@ func TestTransport_AppendEntries(t *testing.T) {
 		addr2, trans2 := NewTestTransport(ttype, "")
 		defer trans2.Close()
 
+        //
 		trans1.Connect(addr2, trans2)
 		trans2.Connect(addr1, trans1)
 
 		var out AppendEntriesResponse
+        // 发起调用
+        // 管道2向管道1发起rcp调用
+        // 结果在了out中
 		if err := trans2.AppendEntries("id1", trans1.LocalAddr(), &args, &out); err != nil {
 			t.Fatalf("err: %v", err)
 		}
 
 		// Verify the response
+        // 用来确保两者响应相同
 		if !reflect.DeepEqual(resp, out) {
 			t.Fatalf("command mismatch: %#v %#v", resp, out)
 		}
@@ -177,6 +191,7 @@ func TestTransport_RequestVote(t *testing.T) {
 	for ttype := 0; ttype < numTestTransports; ttype++ {
 		addr1, trans1 := NewTestTransport(ttype, "")
 		defer trans1.Close()
+        // 从客户端获取一次rpc请求
 		rpcCh := trans1.Consumer()
 
 		// Make the RPC request
@@ -201,6 +216,7 @@ func TestTransport_RequestVote(t *testing.T) {
 					t.Fatalf("command mismatch: %#v %#v", *req, args)
 				}
 
+                // rpc请求响应
 				rpc.Respond(&resp, nil)
 
 			case <-time.After(200 * time.Millisecond):

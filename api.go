@@ -515,6 +515,7 @@ func NewRaft(conf *Config, fsm FSM, logs LogStore, stable StableStore, snaps Sna
 		logs:                  logs,
 		configurationChangeCh: make(chan *configurationChangeFuture),
 		configurations:        configurations{},
+        // 一个rpc请求的Channel
 		rpcCh:                 trans.Consumer(),
 		snapshots:             snaps,
 		userSnapshotCh:        make(chan *userSnapshotFuture),
@@ -1128,5 +1129,6 @@ func (r *Raft) LeadershipTransferToServer(id ServerID, address ServerAddress) Fu
 		return errorFuture{ErrUnsupportedProtocol}
 	}
 
+    // 转移leadership
 	return r.initiateLeadershipTransfer(&id, &address)
 }

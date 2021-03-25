@@ -1,5 +1,3 @@
-package raft
-
 import (
 	"bytes"
 	"container/list"
@@ -265,15 +263,17 @@ func (r *Raft) runCandidate() {
 	metrics.IncrCounter([]string{"raft", "state", "candidate"}, 1)
 
 	// Start vote for us, and set a timeout
+    // 选举自己
 	voteCh := r.electSelf()
 
 	// Make sure the leadership transfer flag is reset after each run. Having this
-	// flag will set the field LeadershipTransfer in a RequestVoteRequst to true,
+	// flag will set the field LeadershipTransfer in a RequestVoteRequest to true,
 	// which will make other servers vote even though they have a leader already.
 	// It is important to reset that flag, because this priviledge could be abused
 	// otherwise.
 	defer func() { r.candidateFromLeadershipTransfer = false }()
 
+    // 选举超时时间
 	electionTimer := randomTimeout(r.conf.ElectionTimeout)
 
 	// Tally the votes, need a simple majority
@@ -281,15 +281,18 @@ func (r *Raft) runCandidate() {
 	votesNeeded := r.quorumSize()
 	r.logger.Debug("votes", "needed", votesNeeded)
 
+    // 如果自己处于candidate状态
 	for r.getState() == Candidate {
 		select {
 		case rpc := <-r.rpcCh:
+            // 处理rpc请求
 			r.processRPC(rpc)
 
 		case vote := <-voteCh:
 			// Check if the term is greater than ours, bail
 			if vote.Term > r.getCurrentTerm() {
 				r.logger.Debug("newer term discovered, fallback to follower")
+                // 设置自己是follower
 				r.setState(Follower)
 				r.setCurrentTerm(vote.Term)
                 // 循环结束，自己将不再作为candidate
@@ -308,6 +311,7 @@ func (r *Raft) runCandidate() {
 				r.logger.Info("election won", "tally", grantedVotes)
                 // 设置自己为leader
 				r.setState(Leader)
+                // 设置自己为leader
 				r.setLeader(r.localAddr)
 				return
 			}
@@ -402,6 +406,7 @@ func (r *Raft) runLeader() {
 	r.setupLeaderState()
 
 	// Cleanup state on step down
+    // leader推出，清理
 	defer func() {
 		// Since we were the leader previously, we update our
 		// last contact time when we step down, so that we are not
@@ -412,7 +417,7 @@ func (r *Raft) runLeader() {
 
 		// Stop replication
 		for _, p := range r.leaderState.replState {
-            // 停止复制
+            // 通知各个go routine停止复制
 			close(p.stopCh)
 		}
 
@@ -440,6 +445,7 @@ func (r *Raft) runLeader() {
 		// provide the leader, so we cannot always blank this out.
 		r.leaderLock.Lock()
 		if r.leader == r.localAddr {
+            // 清空leader节点
 			r.leader = ""
 		}
 		r.leaderLock.Unlock()
@@ -472,6 +478,7 @@ func (r *Raft) runLeader() {
 	// maintain that there exists at most one uncommitted configuration entry in
 	// any log, so we have to do proper no-ops here.
     // 这里提交一个空日志
+    // 在该节点成为领导节点的时候，会添加一个空的日志，用来提交之前任期为提交的节点
 	noop := &logFuture{
 		log: Log{
 			Type: LogNoop,
@@ -480,6 +487,7 @@ func (r *Raft) runLeader() {
 	r.dispatchLogs([]*logFuture{noop})
 
 	// Sit in the leader loop until we step down
+    // 开始处于leader的角色
 	r.leaderLoop()
 }
 
@@ -502,6 +510,7 @@ func (r *Raft) startStopReplication() {
 		if _, ok := r.leaderState.replState[server.ID]; !ok {
             // 之前没有添加的节点
 			r.logger.Info("added peer, starting replication", "peer", server.ID)
+            // 初始化follow的状态
 			s := &followerReplication{
 				peer:                server,
 				commitment:          r.leaderState.commitment,
@@ -512,13 +521,14 @@ func (r *Raft) startStopReplication() {
 				triggerDeferErrorCh: make(chan *deferError, 1),
                 // 获取集群节点任期
 				currentTerm:         r.getCurrentTerm(),
-                // 获取下次要replicate的index
+                // 下次要replicate的index
 				nextIndex:           lastIdx + 1,
 				lastContact:         time.Now(),
 				notify:              make(map[*verifyFuture]struct{}),
 				notifyCh:            make(chan struct{}, 1), // 都是buffer的channel
 				stepDown:            r.leaderState.stepDown,
 			}
+            // 每个副本节点对应状态
 			r.leaderState.replState[server.ID] = s
             // 每个server, 一个goroutine开始进行复制
 			r.goFunc(func() { r.replicate(s) })
@@ -532,6 +542,7 @@ func (r *Raft) startStopReplication() {
 	// Stop replication goroutines that need stopping
     // 对于已经删除的节点，删除
 	for serverID, repl := range r.leaderState.replState {
+        // 有配置，过滤
 		if inConfig[serverID] {
 			continue
 		}
@@ -540,6 +551,7 @@ func (r *Raft) startStopReplication() {
         // 用来关闭该节点的复制
 		repl.stopCh <- lastIdx
 		close(repl.stopCh)
+        // 从配置中删除
 		delete(r.leaderState.replState, serverID)
 		r.observe(PeerObservation{Peer: repl.peer, Removed: true})
 	}
@@ -592,6 +604,7 @@ func (r *Raft) leaderLoop() {
 			if r.getLeadershipTransferInProgress() {
 				r.logger.Debug(ErrLeadershipTransferInProgress.Error())
 				future.respond(ErrLeadershipTransferInProgress)
+                // 跳过后面的流程
 				continue
 			}
 
@@ -602,6 +615,7 @@ func (r *Raft) leaderLoop() {
 			leftLeaderLoop := make(chan struct{})
 			defer func() { close(leftLeaderLoop) }()
 
+            // 用来控制leadershipTransfer goroutine
 			stopCh := make(chan struct{})
 			doneCh := make(chan error, 1)
 
@@ -621,6 +635,7 @@ func (r *Raft) leaderLoop() {
 					future.respond(err)
                     // 领导选举做完了
 					<-doneCh
+                // 来开了loop
 				case <-leftLeaderLoop:
 					close(stopCh)
 					err := fmt.Errorf("lost leadership during transfer (expected)")
@@ -643,6 +658,7 @@ func (r *Raft) leaderLoop() {
 			id := future.ID
 			address := future.Address
 			if id == nil {
+                // 自己挑选的节点
 				s := r.pickServer()
 				if s != nil {
 					id = &s.ID
@@ -658,7 +674,7 @@ func (r *Raft) leaderLoop() {
 				continue
 			}
 
-            // 开始领导选举
+            // 开始领导选举，进行转移
 			go r.leadershipTransfer(*id, *address, state, stopCh, doneCh)
 
 		case <-r.leaderState.commitCh:
@@ -827,7 +843,7 @@ func (r *Raft) leaderLoop() {
 		case <-r.shutdownCh:
 			return
 		}
-	}
+	} // 结束for 循环
 }
 
 // verifyLeader must be called from the main thread for safety.
@@ -868,9 +884,11 @@ func (r *Raft) leadershipTransfer(id ServerID, address ServerAddress, repl *foll
 	}
 
 	// Step 1: set this field which stops this leader from responding to any client requests.
+    // 设置正在进行leadershifp transfer
 	r.setLeadershipTransferInProgress(true)
 	defer func() { r.setLeadershipTransferInProgress(false) }()
 
+    // 如果follow的日志index <= 当前的index。
 	for atomic.LoadUint64(&repl.nextIndex) <= r.getLastIndex() {
 		err := &deferError{}
 		err.init()
@@ -888,7 +906,7 @@ func (r *Raft) leadershipTransfer(id ServerID, address ServerAddress, repl *foll
 		}
 	}
 
-	// Step ?: the thesis describes in chap 6.4.1: Using clocks to reduce
+	// Step 2: the thesis describes in chap 6.4.1: Using clocks to reduce
 	// messaging for read-only queries. If this is implemented, the lease
 	// has to be reset as well, in case leadership is transferred. This
 	// implementation also has a lease, but it serves another purpose and
@@ -1117,8 +1135,9 @@ func (r *Raft) dispatchLogs(applyLogs []*logFuture) {
 	metrics.SetGauge([]string{"raft", "leader", "dispatchNumLogs"}, float32(n))
 
 	for idx, applyLog := range applyLogs {
+        // 记录时间戳
 		applyLog.dispatch = now
-        // 顺序索引
+        // 最后一个索引位置增加
 		lastIndex++
         // 每条日志都有索引号
         // leader任期
@@ -1141,6 +1160,7 @@ func (r *Raft) dispatchLogs(applyLogs []*logFuture) {
 		r.setState(Follower)
 		return
 	}
+
 	r.leaderState.commitment.match(r.localID, lastIndex)
 
 	// Update the last log since it's on disk now
@@ -1148,6 +1168,7 @@ func (r *Raft) dispatchLogs(applyLogs []*logFuture) {
 	r.setLastLog(lastIndex, term)
 
 	// Notify the replicators of the new log
+    // 通知各个复制go routine来进行复制
 	for _, f := range r.leaderState.replState {
 		asyncNotifyCh(f.triggerCh)
 	}
@@ -1270,6 +1291,7 @@ func (r *Raft) prepareLog(l *Log, future *logFuture) *commitTuple {
 func (r *Raft) processRPC(rpc RPC) {
     // 获取rpc头
 	if err := r.checkRPCHeader(rpc); err != nil {
+        // 对rpc进行响应
 		rpc.Respond(nil, err)
 		return
 	}
@@ -1500,6 +1522,7 @@ func (r *Raft) processConfigurationLogEntry(entry *Log) {
 // requestVote is invoked when we get an request vote RPC call.
 func (r *Raft) requestVote(rpc RPC, req *RequestVoteRequest) {
 	defer metrics.MeasureSince([]string{"raft", "rpc", "requestVote"}, time.Now())
+    // 通知观察者，这里加入了观察者，有新的投票请求
 	r.observe(*req)
 
 	// Setup a response
@@ -1524,7 +1547,7 @@ func (r *Raft) requestVote(rpc RPC, req *RequestVoteRequest) {
 	// there is a known leader. But if the leader initiated a leadership transfer,
 	// vote!
 	candidate := r.trans.DecodePeer(req.Candidate)
-    // 票选是否合法
+    // 投票请求是否合法
 	if leader := r.Leader(); leader != "" && leader != candidate && !req.LeadershipTransfer {
 		r.logger.Warn("rejecting vote request since we have a leader",
 			"from", candidate,
@@ -1550,6 +1573,7 @@ func (r *Raft) requestVote(rpc RPC, req *RequestVoteRequest) {
 	}
 
 	// Check if we have voted yet
+    // 上次投票
 	lastVoteTerm, err := r.stable.GetUint64(keyLastVoteTerm)
 	if err != nil && err.Error() != "not found" {
 		r.logger.Error("failed to get last vote term", "error", err)
@@ -1759,7 +1783,9 @@ func (r *Raft) electSelf() <-chan *voteResult {
 	req := &RequestVoteRequest{
 		RPCHeader:          r.getRPCHeader(),
 		Term:               r.getCurrentTerm(),
+        // 设置自己为候选者
 		Candidate:          r.trans.EncodePeer(r.localID, r.localAddr),
+        // 设置当前log日志索引号
 		LastLogIndex:       lastIdx,
 		LastLogTerm:        lastTerm,
 		LeadershipTransfer: r.candidateFromLeadershipTransfer,
@@ -1791,7 +1817,7 @@ func (r *Raft) electSelf() <-chan *voteResult {
             // 如果是本节点
 			if server.ID == r.localID {
 				// Persist a vote for ourselves
-                // 持久化自己的投票
+                // 持久化自己最新的投票
 				if err := r.persistVote(req.Term, req.Candidate); err != nil {
 					r.logger.Error("failed to persist vote", "error", err)
 					return nil
@@ -1804,6 +1830,7 @@ func (r *Raft) electSelf() <-chan *voteResult {
 						Term:      req.Term,
 						Granted:   true,
 					},
+                    // 投给自己
 					voterID: r.localID,
 				}
 			} else {
@@ -1864,6 +1891,7 @@ func (r *Raft) pickServer() *Server {
 	var pick *Server
 	var current uint64
 	for _, server := range r.configurations.latest.Servers {
+        // 忽略自己这个节点
 		if server.ID == r.localID {
 			continue
 		}
