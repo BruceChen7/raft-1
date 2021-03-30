@@ -80,6 +80,7 @@ type RequestVoteRequest struct {
 	// Used to indicate to peers if this vote was triggered by a leadership
 	// transfer. It is required for leadership transfer to work, because servers
 	// wouldn't vote otherwise if they are aware of an existing leader.
+    // 用来告诉对方自己正在进行领导选举
 	LeadershipTransfer bool
 }
 

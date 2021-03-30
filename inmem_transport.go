@@ -52,6 +52,7 @@ func NewInmemTransportWithTimeout(addr ServerAddress, timeout time.Duration) (Se
 		addr = NewInmemAddr()
 	}
 	trans := &InmemTransport{
+        // 创建获取rpc请求的channel
 		consumerCh: make(chan RPC, 16),
 		localAddr:  addr,
 		peers:      make(map[ServerAddress]*InmemTransport),
@@ -87,10 +88,12 @@ func (i *InmemTransport) AppendEntriesPipeline(id ServerID, target ServerAddress
 	i.Lock()
 	defer i.Unlock()
 
+    // 找到对于那个的传输层
 	peer, ok := i.peers[target]
 	if !ok {
 		return nil, fmt.Errorf("failed to connect to peer: %v", target)
 	}
+    // 添加一个管道
 	pipeline := newInmemPipeline(i, peer, target)
 	i.pipelines = append(i.pipelines, pipeline)
 	return pipeline, nil
@@ -98,6 +101,7 @@ func (i *InmemTransport) AppendEntriesPipeline(id ServerID, target ServerAddress
 
 // AppendEntries implements the Transport interface.
 func (i *InmemTransport) AppendEntries(id ServerID, target ServerAddress, args *AppendEntriesRequest, resp *AppendEntriesResponse) error {
+    // 发起一个rpc
 	rpcResp, err := i.makeRPC(target, args, nil, i.timeout)
 	if err != nil {
 		return err
@@ -105,6 +109,7 @@ func (i *InmemTransport) AppendEntries(id ServerID, target ServerAddress, args *
 
 	// Copy the result back
 	out := rpcResp.Response.(*AppendEntriesResponse)
+    // 拷贝一份结果
 	*resp = *out
 	return nil
 }
@@ -160,13 +165,16 @@ func (i *InmemTransport) makeRPC(target ServerAddress, args interface{}, r io.Re
 
 	// Send the RPC over
 	respCh := make(chan RPCResponse)
+    // rpc请求
 	req := RPC{
 		Command:  args,
 		Reader:   r,
 		RespChan: respCh,
 	}
 	select {
+    // 发起rpc调用
 	case peer.consumerCh <- req:
+    // 超时时间
 	case <-time.After(timeout):
 		err = fmt.Errorf("send timed out")
 		return
@@ -174,6 +182,7 @@ func (i *InmemTransport) makeRPC(target ServerAddress, args interface{}, r io.Re
 
 	// Wait for a response
 	select {
+    // 获取rpc结构
 	case rpcResp = <-respCh:
 		if rpcResp.Error != nil {
 			err = rpcResp.Error
@@ -200,6 +209,7 @@ func (i *InmemTransport) Connect(peer ServerAddress, t Transport) {
 	trans := t.(*InmemTransport)
 	i.Lock()
 	defer i.Unlock()
+    // 两边的管道添加
 	i.peers[peer] = trans
 }
 
@@ -246,6 +256,7 @@ func newInmemPipeline(trans *InmemTransport, peer *InmemTransport, addr ServerAd
 		trans:        trans,
 		peer:         peer,
 		peerAddr:     addr,
+        // 找到
 		doneCh:       make(chan AppendFuture, 16),
 		inprogressCh: make(chan *inmemPipelineInflight, 16),
 		shutdownCh:   make(chan struct{}),

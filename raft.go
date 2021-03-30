@@ -1,5 +1,3 @@
-package raft
-
 import (
 	"bytes"
 	"container/list"
@@ -75,15 +73,19 @@ func getSnapshotVersion(protocolVersion ProtocolVersion) SnapshotVersion {
 // with an optional associated future that should be invoked.
 type commitTuple struct {
 	log    *Log
+    // 等到日志后提交的结果
 	future *logFuture
 }
 
 // leaderState is state that is used while we are a leader.
 type leaderState struct {
+    // 正在进行领导权的转移
 	leadershipTransferInProgress int32 // indicates that a leadership transfer is in progress.
 	commitCh                     chan struct{}
 	commitment                   *commitment
+    // 需要传输给其他节点的logFutue
 	inflight                     *list.List // list of logFuture in log index order
+    // 每个机器复制的情况
 	replState                    map[ServerID]*followerReplication
 	notify                       map[*verifyFuture]struct{}
 	stepDown                     chan struct{}
@@ -157,6 +159,7 @@ func (r *Raft) runFollower() {
 	for r.getState() == Follower {
 		select {
 		case rpc := <-r.rpcCh:
+            // 处理 rpc请求
 			r.processRPC(rpc)
 
         // 配置变化，作为follower直接拒绝
@@ -190,7 +193,7 @@ func (r *Raft) runFollower() {
 
 		case <-heartbeatTimer:
 			// Restart the heartbeat timer
-            // 重新设置一个超市时间按
+            // 重新设置一个超时时间
 			heartbeatTimer = randomTimeout(r.conf.HeartbeatTimeout)
 
 			// Check if we have had a successful contact
@@ -260,15 +263,17 @@ func (r *Raft) runCandidate() {
 	metrics.IncrCounter([]string{"raft", "state", "candidate"}, 1)
 
 	// Start vote for us, and set a timeout
+    // 选举自己
 	voteCh := r.electSelf()
 
 	// Make sure the leadership transfer flag is reset after each run. Having this
-	// flag will set the field LeadershipTransfer in a RequestVoteRequst to true,
+	// flag will set the field LeadershipTransfer in a RequestVoteRequest to true,
 	// which will make other servers vote even though they have a leader already.
 	// It is important to reset that flag, because this priviledge could be abused
 	// otherwise.
 	defer func() { r.candidateFromLeadershipTransfer = false }()
 
+    // 选举超时时间
 	electionTimer := randomTimeout(r.conf.ElectionTimeout)
 
 	// Tally the votes, need a simple majority
@@ -276,21 +281,26 @@ func (r *Raft) runCandidate() {
 	votesNeeded := r.quorumSize()
 	r.logger.Debug("votes", "needed", votesNeeded)
 
+    // 如果自己处于candidate状态
 	for r.getState() == Candidate {
 		select {
 		case rpc := <-r.rpcCh:
+            // 处理rpc请求
 			r.processRPC(rpc)
 
 		case vote := <-voteCh:
 			// Check if the term is greater than ours, bail
 			if vote.Term > r.getCurrentTerm() {
 				r.logger.Debug("newer term discovered, fallback to follower")
+                // 设置自己是follower
 				r.setState(Follower)
 				r.setCurrentTerm(vote.Term)
+                // 循环结束，自己将不再作为candidate
 				return
 			}
 
 			// Check if the vote is granted
+            // 有一张投票通过
 			if vote.Granted {
 				grantedVotes++
 				r.logger.Debug("vote granted", "from", vote.voterID, "term", vote.Term, "tally", grantedVotes)
@@ -299,7 +309,9 @@ func (r *Raft) runCandidate() {
 			// Check if we've become the leader
 			if grantedVotes >= votesNeeded {
 				r.logger.Info("election won", "tally", grantedVotes)
+                // 设置自己为leader
 				r.setState(Leader)
+                // 设置自己为leader
 				r.setLeader(r.localAddr)
 				return
 			}
@@ -330,6 +342,8 @@ func (r *Raft) runCandidate() {
 		case <-electionTimer:
 			// Election failed! Restart the election. We simply return,
 			// which will kick us back into runCandidate
+            // 直接返回
+            // 下次开始选举
 			r.logger.Warn("Election timeout reached, restarting election")
 			return
 
@@ -357,10 +371,12 @@ func (r *Raft) getLeadershipTransferInProgress() bool {
 
 func (r *Raft) setupLeaderState() {
 	r.leaderState.commitCh = make(chan struct{}, 1)
+    // 开始新任期的提交记录
 	r.leaderState.commitment = newCommitment(r.leaderState.commitCh,
 		r.configurations.latest,
 		r.getLastIndex()+1 /* first index that may be committed in this term */)
 	r.leaderState.inflight = list.New()
+    // 初始化
 	r.leaderState.replState = make(map[ServerID]*followerReplication)
 	r.leaderState.notify = make(map[*verifyFuture]struct{})
 	r.leaderState.stepDown = make(chan struct{}, 1)
@@ -373,6 +389,7 @@ func (r *Raft) runLeader() {
 	metrics.IncrCounter([]string{"raft", "state", "leader"}, 1)
 
 	// Notify that we are the leader
+    // 通知别人自己是leader
 	asyncNotifyBool(r.leaderCh, true)
 
 	// Push to the notify channel if given
@@ -385,9 +402,11 @@ func (r *Raft) runLeader() {
 
 	// setup leader state. This is only supposed to be accessed within the
 	// leaderloop.
+    // 初始化这个任期leader状态
 	r.setupLeaderState()
 
 	// Cleanup state on step down
+    // leader推出，清理
 	defer func() {
 		// Since we were the leader previously, we update our
 		// last contact time when we step down, so that we are not
@@ -398,11 +417,13 @@ func (r *Raft) runLeader() {
 
 		// Stop replication
 		for _, p := range r.leaderState.replState {
+            // 通知各个go routine停止复制
 			close(p.stopCh)
 		}
 
 		// Respond to all inflight operations
 		for e := r.leaderState.inflight.Front(); e != nil; e = e.Next() {
+            // 每个传给其他节点的logFuture直接返回
 			e.Value.(*logFuture).respond(ErrLeadershipLost)
 		}
 
@@ -424,11 +445,13 @@ func (r *Raft) runLeader() {
 		// provide the leader, so we cannot always blank this out.
 		r.leaderLock.Lock()
 		if r.leader == r.localAddr {
+            // 清空leader节点
 			r.leader = ""
 		}
 		r.leaderLock.Unlock()
 
 		// Notify that we are not the leader
+        // 用来开一个口子，告诉应用层leader节点信息
 		asyncNotifyBool(r.leaderCh, false)
 
 		// Push to the notify channel if given
@@ -454,6 +477,8 @@ func (r *Raft) runLeader() {
 	// an unbounded number of uncommitted configurations in the log. We now
 	// maintain that there exists at most one uncommitted configuration entry in
 	// any log, so we have to do proper no-ops here.
+    // 这里提交一个空日志
+    // 在该节点成为领导节点的时候，会添加一个空的日志，用来提交之前任期为提交的节点
 	noop := &logFuture{
 		log: Log{
 			Type: LogNoop,
@@ -462,6 +487,7 @@ func (r *Raft) runLeader() {
 	r.dispatchLogs([]*logFuture{noop})
 
 	// Sit in the leader loop until we step down
+    // 开始处于leader的角色
 	r.leaderLoop()
 }
 
@@ -475,41 +501,57 @@ func (r *Raft) startStopReplication() {
 
 	// Start replication goroutines that need starting
 	for _, server := range r.configurations.latest.Servers {
+        // 跳过本节点
 		if server.ID == r.localID {
 			continue
 		}
 		inConfig[server.ID] = true
+        // 添加一个机器的复制状态
 		if _, ok := r.leaderState.replState[server.ID]; !ok {
+            // 之前没有添加的节点
 			r.logger.Info("added peer, starting replication", "peer", server.ID)
+            // 初始化follow的状态
 			s := &followerReplication{
 				peer:                server,
 				commitment:          r.leaderState.commitment,
 				stopCh:              make(chan uint64, 1),
+                // 带有buffer的chan
 				triggerCh:           make(chan struct{}, 1),
+                // buffer的channel
 				triggerDeferErrorCh: make(chan *deferError, 1),
+                // 获取集群节点任期
 				currentTerm:         r.getCurrentTerm(),
+                // 下次要replicate的index
 				nextIndex:           lastIdx + 1,
 				lastContact:         time.Now(),
 				notify:              make(map[*verifyFuture]struct{}),
-				notifyCh:            make(chan struct{}, 1),
+				notifyCh:            make(chan struct{}, 1), // 都是buffer的channel
 				stepDown:            r.leaderState.stepDown,
 			}
+            // 每个副本节点对应状态
 			r.leaderState.replState[server.ID] = s
+            // 每个server, 一个goroutine开始进行复制
 			r.goFunc(func() { r.replicate(s) })
+            // 异步通知goroutine来复制
+            // 都是异步的
 			asyncNotifyCh(s.triggerCh)
 			r.observe(PeerObservation{Peer: server, Removed: false})
 		}
 	}
 
 	// Stop replication goroutines that need stopping
+    // 对于已经删除的节点，删除
 	for serverID, repl := range r.leaderState.replState {
+        // 有配置，过滤
 		if inConfig[serverID] {
 			continue
 		}
 		// Replicate up to lastIdx and stop
 		r.logger.Info("removed peer, stopping replication", "peer", serverID, "last-index", lastIdx)
+        // 用来关闭该节点的复制
 		repl.stopCh <- lastIdx
 		close(repl.stopCh)
+        // 从配置中删除
 		delete(r.leaderState.replState, serverID)
 		r.observe(PeerObservation{Peer: repl.peer, Removed: true})
 	}
@@ -547,16 +589,22 @@ func (r *Raft) leaderLoop() {
 
 	for r.getState() == Leader {
 		select {
+        // 处理rpc结果
 		case rpc := <-r.rpcCh:
 			r.processRPC(rpc)
 
+        // 自己
 		case <-r.leaderState.stepDown:
+            // 自己是follower状态
 			r.setState(Follower)
 
+        // leadership 在转换
 		case future := <-r.leadershipTransferCh:
+            // 如果已经在转换了，不处理了
 			if r.getLeadershipTransferInProgress() {
 				r.logger.Debug(ErrLeadershipTransferInProgress.Error())
 				future.respond(ErrLeadershipTransferInProgress)
+                // 跳过后面的流程
 				continue
 			}
 
@@ -567,6 +615,7 @@ func (r *Raft) leaderLoop() {
 			leftLeaderLoop := make(chan struct{})
 			defer func() { close(leftLeaderLoop) }()
 
+            // 用来控制leadershipTransfer goroutine
 			stopCh := make(chan struct{})
 			doneCh := make(chan error, 1)
 
@@ -579,16 +628,20 @@ func (r *Raft) leaderLoop() {
 			go func() {
 				select {
 				case <-time.After(r.conf.ElectionTimeout):
+                    // 直接关闭stop
 					close(stopCh)
 					err := fmt.Errorf("leadership transfer timeout")
 					r.logger.Debug(err.Error())
 					future.respond(err)
+                    // 领导选举做完了
 					<-doneCh
+                // 来开了loop
 				case <-leftLeaderLoop:
 					close(stopCh)
 					err := fmt.Errorf("lost leadership during transfer (expected)")
 					r.logger.Debug(err.Error())
 					future.respond(nil)
+                    // 领导选举完成了
 					<-doneCh
 				case err := <-doneCh:
 					if err != nil {
@@ -605,6 +658,7 @@ func (r *Raft) leaderLoop() {
 			id := future.ID
 			address := future.Address
 			if id == nil {
+                // 自己挑选的节点
 				s := r.pickServer()
 				if s != nil {
 					id = &s.ID
@@ -620,12 +674,15 @@ func (r *Raft) leaderLoop() {
 				continue
 			}
 
+            // 开始领导选举，进行转移
 			go r.leadershipTransfer(*id, *address, state, stopCh, doneCh)
 
 		case <-r.leaderState.commitCh:
 			// Process the newly committed entries
 			oldCommitIndex := r.getCommitIndex()
+            // 胡偶去最新的提交记录
 			commitIndex := r.leaderState.commitment.getCommitIndex()
+            // 多个节点同意提交，改变提交后的commitIndex
 			r.setCommitIndex(commitIndex)
 
 			// New configration has been committed, set it as the committed
@@ -633,6 +690,7 @@ func (r *Raft) leaderLoop() {
 			if r.configurations.latestIndex > oldCommitIndex &&
 				r.configurations.latestIndex <= commitIndex {
 				r.setCommittedConfiguration(r.configurations.latest, r.configurations.latestIndex)
+                // 没有投票权
 				if !hasVote(r.configurations.committed, r.localID) {
 					stepDown = true
 				}
@@ -640,6 +698,7 @@ func (r *Raft) leaderLoop() {
 
 			start := time.Now()
 			var groupReady []*list.Element
+            // key是日子索引
 			var groupFutures = make(map[uint64]*logFuture)
 			var lastIdxInGroup uint64
 
@@ -647,6 +706,7 @@ func (r *Raft) leaderLoop() {
 			for e := r.leaderState.inflight.Front(); e != nil; e = e.Next() {
 				commitLog := e.Value.(*logFuture)
 				idx := commitLog.log.Index
+                // 如果该日志没有被提交，那么直接退出
 				if idx > commitIndex {
 					// Don't go past the committed index
 					break
@@ -655,6 +715,7 @@ func (r *Raft) leaderLoop() {
 				// Measure the commit time
 				metrics.MeasureSince([]string{"raft", "commitTime"}, commitLog.dispatch)
 				groupReady = append(groupReady, e)
+                // 已经提交了
 				groupFutures[idx] = commitLog
 				lastIdxInGroup = idx
 			}
@@ -782,7 +843,7 @@ func (r *Raft) leaderLoop() {
 		case <-r.shutdownCh:
 			return
 		}
-	}
+	} // 结束for 循环
 }
 
 // verifyLeader must be called from the main thread for safety.
@@ -823,12 +884,15 @@ func (r *Raft) leadershipTransfer(id ServerID, address ServerAddress, repl *foll
 	}
 
 	// Step 1: set this field which stops this leader from responding to any client requests.
+    // 设置正在进行leadershifp transfer
 	r.setLeadershipTransferInProgress(true)
 	defer func() { r.setLeadershipTransferInProgress(false) }()
 
+    // 如果follow的日志index <= 当前的index。
 	for atomic.LoadUint64(&repl.nextIndex) <= r.getLastIndex() {
 		err := &deferError{}
 		err.init()
+        // 写到buffer中
 		repl.triggerDeferErrorCh <- err
 		select {
 		case err := <-err.errCh:
@@ -842,7 +906,7 @@ func (r *Raft) leadershipTransfer(id ServerID, address ServerAddress, repl *foll
 		}
 	}
 
-	// Step ?: the thesis describes in chap 6.4.1: Using clocks to reduce
+	// Step 2: the thesis describes in chap 6.4.1: Using clocks to reduce
 	// messaging for read-only queries. If this is implemented, the lease
 	// has to be reset as well, in case leadership is transferred. This
 	// implementation also has a lease, but it serves another purpose and
@@ -1065,34 +1129,46 @@ func (r *Raft) dispatchLogs(applyLogs []*logFuture) {
 	term := r.getCurrentTerm()
 	lastIndex := r.getLastIndex()
 
+    // 要写日志的数量
 	n := len(applyLogs)
 	logs := make([]*Log, n)
 	metrics.SetGauge([]string{"raft", "leader", "dispatchNumLogs"}, float32(n))
 
 	for idx, applyLog := range applyLogs {
+        // 记录时间戳
 		applyLog.dispatch = now
+        // 最后一个索引位置增加
 		lastIndex++
+        // 每条日志都有索引号
+        // leader任期
 		applyLog.log.Index = lastIndex
 		applyLog.log.Term = term
 		logs[idx] = &applyLog.log
+        // 正在传送的的log增加
 		r.leaderState.inflight.PushBack(applyLog)
 	}
 
 	// Write the log entry locally
+    // 把本地持久层日志增加
 	if err := r.logs.StoreLogs(logs); err != nil {
 		r.logger.Error("failed to commit logs", "error", err)
 		for _, applyLog := range applyLogs {
+            // 每条日志都响应写失败
 			applyLog.respond(err)
 		}
+        // 直接转成follower
 		r.setState(Follower)
 		return
 	}
+
 	r.leaderState.commitment.match(r.localID, lastIndex)
 
 	// Update the last log since it's on disk now
+    // 更新任期和最新索引号
 	r.setLastLog(lastIndex, term)
 
 	// Notify the replicators of the new log
+    // 通知各个复制go routine来进行复制
 	for _, f := range r.leaderState.replState {
 		asyncNotifyCh(f.triggerCh)
 	}
@@ -1107,7 +1183,9 @@ func (r *Raft) dispatchLogs(applyLogs []*logFuture) {
 // inflight logs.
 func (r *Raft) processLogs(index uint64, futures map[uint64]*logFuture) {
 	// Reject logs we've applied already
+    // 如果不是最新的，直接返回
 	lastApplied := r.getLastApplied()
+    // index是这次达成一致的index
 	if index <= lastApplied {
 		r.logger.Warn("skipping application of old log", "index", index)
 		return
@@ -1115,6 +1193,7 @@ func (r *Raft) processLogs(index uint64, futures map[uint64]*logFuture) {
 
 	applyBatch := func(batch []*commitTuple) {
 		select {
+        // 喂给状态机进行提交
 		case r.fsmMutateCh <- batch:
 		case <-r.shutdownCh:
 			for _, cl := range batch {
@@ -1125,6 +1204,7 @@ func (r *Raft) processLogs(index uint64, futures map[uint64]*logFuture) {
 		}
 	}
 
+    // 一次最多提交的日志数
 	batch := make([]*commitTuple, 0, r.conf.MaxAppendEntries)
 
 	// Apply all the preceding logs
@@ -1133,6 +1213,7 @@ func (r *Raft) processLogs(index uint64, futures map[uint64]*logFuture) {
 		// Get the log, either from the future or from our log store
 		future, futureOk := futures[idx]
 		if futureOk {
+            // 存在future，取future
 			preparedLog = r.prepareLog(&future.log, future)
 		} else {
 			l := new(Log)
@@ -1140,23 +1221,29 @@ func (r *Raft) processLogs(index uint64, futures map[uint64]*logFuture) {
 				r.logger.Error("failed to get log", "index", idx, "error", err)
 				panic(err)
 			}
+            // 取log
 			preparedLog = r.prepareLog(l, nil)
 		}
 
 		switch {
+        // 这里的future，交给applyBatch来填
 		case preparedLog != nil:
 			// If we have a log ready to send to the FSM add it to the batch.
 			// The FSM thread will respond to the future.
 			batch = append(batch, preparedLog)
 
 			// If we have filled up a batch, send it to the FSM
+            // 如果到达了最多的批量
 			if len(batch) >= r.conf.MaxAppendEntries {
 				applyBatch(batch)
+                // 重新分配
 				batch = make([]*commitTuple, 0, r.conf.MaxAppendEntries)
 			}
 
+        // 如果存在future
 		case futureOk:
 			// Invoke the future if given.
+            // 没有错误正常
 			future.respond(nil)
 		}
 	}
@@ -1178,6 +1265,7 @@ func (r *Raft) prepareLog(l *Log, future *logFuture) *commitTuple {
 		fallthrough
 
 	case LogCommand:
+        // 用来给状态机提交
 		return &commitTuple{l, future}
 
 	case LogConfiguration:
@@ -1189,6 +1277,7 @@ func (r *Raft) prepareLog(l *Log, future *logFuture) *commitTuple {
 	case LogRemovePeerDeprecated:
 	case LogNoop:
 		// Ignore the no-op
+        // 什么都不做
 
 	default:
 		panic(fmt.Errorf("unrecognized log type: %#v", l))
@@ -1200,15 +1289,19 @@ func (r *Raft) prepareLog(l *Log, future *logFuture) *commitTuple {
 // processRPC is called to handle an incoming RPC request. This must only be
 // called from the main thread.
 func (r *Raft) processRPC(rpc RPC) {
+    // 获取rpc头
 	if err := r.checkRPCHeader(rpc); err != nil {
+        // 对rpc进行响应
 		rpc.Respond(nil, err)
 		return
 	}
 
 	switch cmd := rpc.Command.(type) {
 	case *AppendEntriesRequest:
+        // 用来append log
 		r.appendEntries(rpc, cmd)
 	case *RequestVoteRequest:
+        // 用来投票
 		r.requestVote(rpc, cmd)
 	case *InstallSnapshotRequest:
 		r.installSnapshot(rpc, cmd)
@@ -1257,21 +1350,26 @@ func (r *Raft) appendEntries(rpc RPC, a *AppendEntriesRequest) {
 		NoRetryBackoff: false,
 	}
 	var rpcErr error
+    // 最后统一执行逻辑
 	defer func() {
 		rpc.Respond(resp, rpcErr)
 	}()
 
 	// Ignore an older term
+    // 发过来的term小于自己本身的term
 	if a.Term < r.getCurrentTerm() {
 		return
 	}
 
 	// Increase the term if we see a newer one, also transition to follower
 	// if we ever get an appendEntries call
+
 	if a.Term > r.getCurrentTerm() || r.getState() != Follower {
 		// Ensure transition to follower
+        // 设置自己是follower
 		r.setState(Follower)
 		r.setCurrentTerm(a.Term)
+        // 相应自己的term
 		resp.Term = a.Term
 	}
 
@@ -1279,26 +1377,33 @@ func (r *Raft) appendEntries(rpc RPC, a *AppendEntriesRequest) {
 	r.setLeader(ServerAddress(r.trans.DecodePeer(a.Leader)))
 
 	// Verify the last log entry
+    // 比较日志的一致性
 	if a.PrevLogEntry > 0 {
 		lastIdx, lastTerm := r.getLastEntry()
 
 		var prevLogTerm uint64
+        // 和本地的term相同
 		if a.PrevLogEntry == lastIdx {
 			prevLogTerm = lastTerm
 
 		} else {
 			var prevLog Log
+            // 和本地term不同
 			if err := r.logs.GetLog(a.PrevLogEntry, &prevLog); err != nil {
 				r.logger.Warn("failed to get previous log",
 					"previous-index", a.PrevLogEntry,
 					"last-index", lastIdx,
 					"error", err)
+                // 不要重试
 				resp.NoRetryBackoff = true
 				return
 			}
+            // 获取本地log任期
 			prevLogTerm = prevLog.Term
 		}
 
+        // 如果请求的log和之前的任期不同
+        // 不再处理
 		if a.PrevLogTerm != prevLogTerm {
 			r.logger.Warn("previous log term mis-match",
 				"ours", prevLogTerm,
@@ -1316,21 +1421,29 @@ func (r *Raft) appendEntries(rpc RPC, a *AppendEntriesRequest) {
 		lastLogIdx, _ := r.getLastLog()
 		var newEntries []*Log
 		for i, entry := range a.Entries {
+            // 是最新的，那么复制新的日志
 			if entry.Index > lastLogIdx {
 				newEntries = a.Entries[i:]
 				break
 			}
 			var storeEntry Log
+            // 获取相关的日志信息
 			if err := r.logs.GetLog(entry.Index, &storeEntry); err != nil {
+                // 没有找到相关日志
+                // 那么直接返回
 				r.logger.Warn("failed to get log entry",
 					"index", entry.Index,
 					"error", err)
 				return
 			}
+            // 发过来的任期和存储的任期不一样
+            // 以发过来的rpc请求为转
 			if entry.Term != storeEntry.Term {
 				r.logger.Warn("clearing log suffix",
 					"from", entry.Index,
 					"to", lastLogIdx)
+
+                // 直接删除这段日志，以leader的为准
 				if err := r.logs.DeleteRange(entry.Index, lastLogIdx); err != nil {
 					r.logger.Error("failed to clear log suffix", "error", err)
 					return
@@ -1338,6 +1451,7 @@ func (r *Raft) appendEntries(rpc RPC, a *AppendEntriesRequest) {
 				if entry.Index <= r.configurations.latestIndex {
 					r.setLatestConfiguration(r.configurations.committed, r.configurations.committedIndex)
 				}
+                // 以leader发过来的请求为准
 				newEntries = a.Entries[i:]
 				break
 			}
@@ -1345,6 +1459,7 @@ func (r *Raft) appendEntries(rpc RPC, a *AppendEntriesRequest) {
 
 		if n := len(newEntries); n > 0 {
 			// Append the new entries
+            // 开始存储日志
 			if err := r.logs.StoreLogs(newEntries); err != nil {
 				r.logger.Error("failed to append to logs", "error", err)
 				// TODO: leaving r.getLastLog() in the wrong
@@ -1359,6 +1474,7 @@ func (r *Raft) appendEntries(rpc RPC, a *AppendEntriesRequest) {
 
 			// Update the lastLog
 			last := newEntries[n-1]
+            // 设置最后已经存储的日志
 			r.setLastLog(last.Index, last.Term)
 		}
 
@@ -1366,19 +1482,24 @@ func (r *Raft) appendEntries(rpc RPC, a *AppendEntriesRequest) {
 	}
 
 	// Update the commit index
+    // 如果leader的提交记录大于本机器的提交记录
 	if a.LeaderCommitIndex > 0 && a.LeaderCommitIndex > r.getCommitIndex() {
 		start := time.Now()
 		idx := min(a.LeaderCommitIndex, r.getLastIndex())
+        // 设置当前commmit id
 		r.setCommitIndex(idx)
 		if r.configurations.latestIndex <= idx {
 			r.setCommittedConfiguration(r.configurations.latest, r.configurations.latestIndex)
 		}
+        // 用来提交给自己的状态机
 		r.processLogs(idx, nil)
 		metrics.MeasureSince([]string{"raft", "rpc", "appendEntries", "processLogs"}, start)
 	}
 
 	// Everything went well, set success
+    // 返回成功
 	resp.Success = true
+    // 更新心跳时间
 	r.setLastContact()
 	return
 }
@@ -1387,7 +1508,9 @@ func (r *Raft) appendEntries(rpc RPC, a *AppendEntriesRequest) {
 // configuration if the entry results in a new configuration. This must only be
 // called from the main thread, or from NewRaft() before any threads have begun.
 func (r *Raft) processConfigurationLogEntry(entry *Log) {
+    // 更新日志配置信息
 	if entry.Type == LogConfiguration {
+        // 已经提交的更新
 		r.setCommittedConfiguration(r.configurations.latest, r.configurations.latestIndex)
 		r.setLatestConfiguration(DecodeConfiguration(entry.Data), entry.Index)
 	} else if entry.Type == LogAddPeerDeprecated || entry.Type == LogRemovePeerDeprecated {
@@ -1399,6 +1522,7 @@ func (r *Raft) processConfigurationLogEntry(entry *Log) {
 // requestVote is invoked when we get an request vote RPC call.
 func (r *Raft) requestVote(rpc RPC, req *RequestVoteRequest) {
 	defer metrics.MeasureSince([]string{"raft", "rpc", "requestVote"}, time.Now())
+    // 通知观察者，这里加入了观察者，有新的投票请求
 	r.observe(*req)
 
 	// Setup a response
@@ -1423,6 +1547,7 @@ func (r *Raft) requestVote(rpc RPC, req *RequestVoteRequest) {
 	// there is a known leader. But if the leader initiated a leadership transfer,
 	// vote!
 	candidate := r.trans.DecodePeer(req.Candidate)
+    // 投票请求是否合法
 	if leader := r.Leader(); leader != "" && leader != candidate && !req.LeadershipTransfer {
 		r.logger.Warn("rejecting vote request since we have a leader",
 			"from", candidate,
@@ -1431,6 +1556,7 @@ func (r *Raft) requestVote(rpc RPC, req *RequestVoteRequest) {
 	}
 
 	// Ignore an older term
+    // 直接返回false
 	if req.Term < r.getCurrentTerm() {
 		return
 	}
@@ -1439,12 +1565,15 @@ func (r *Raft) requestVote(rpc RPC, req *RequestVoteRequest) {
 	if req.Term > r.getCurrentTerm() {
 		// Ensure transition to follower
 		r.logger.Debug("lost leadership because received a requestVote with a newer term")
+        // 将自己设置为follower
 		r.setState(Follower)
 		r.setCurrentTerm(req.Term)
+        // 返回term为请求term
 		resp.Term = req.Term
 	}
 
 	// Check if we have voted yet
+    // 上次投票
 	lastVoteTerm, err := r.stable.GetUint64(keyLastVoteTerm)
 	if err != nil && err.Error() != "not found" {
 		r.logger.Error("failed to get last vote term", "error", err)
@@ -1457,6 +1586,7 @@ func (r *Raft) requestVote(rpc RPC, req *RequestVoteRequest) {
 	}
 
 	// Check if we've voted in this election before
+    // 同一个任期，如果之前有投票过，并且候选人和之前投票的之相同，那么直接
 	if lastVoteTerm == req.Term && lastVoteCandBytes != nil {
 		r.logger.Info("duplicate requestVote for same term", "term", req.Term)
 		if bytes.Compare(lastVoteCandBytes, req.Candidate) == 0 {
@@ -1467,7 +1597,9 @@ func (r *Raft) requestVote(rpc RPC, req *RequestVoteRequest) {
 	}
 
 	// Reject if their term is older
+    // 确保包含了所有term的候选者才能成为leader
 	lastIdx, lastTerm := r.getLastEntry()
+    // 如果自己entry的任期比请求的任期还要大
 	if lastTerm > req.LastLogTerm {
 		r.logger.Warn("rejecting vote request since our last term is greater",
 			"candidate", candidate,
@@ -1642,14 +1774,18 @@ func (r *Raft) electSelf() <-chan *voteResult {
 	respCh := make(chan *voteResult, len(r.configurations.latest.Servers))
 
 	// Increment the term
+    // 添加自己的任期号
 	r.setCurrentTerm(r.getCurrentTerm() + 1)
 
 	// Construct the request
+    // 获取最新entry对应的任期号和索引号
 	lastIdx, lastTerm := r.getLastEntry()
 	req := &RequestVoteRequest{
 		RPCHeader:          r.getRPCHeader(),
 		Term:               r.getCurrentTerm(),
+        // 设置自己为候选者
 		Candidate:          r.trans.EncodePeer(r.localID, r.localAddr),
+        // 设置当前log日志索引号
 		LastLogIndex:       lastIdx,
 		LastLogTerm:        lastTerm,
 		LeadershipTransfer: r.candidateFromLeadershipTransfer,
@@ -1660,6 +1796,7 @@ func (r *Raft) electSelf() <-chan *voteResult {
 		r.goFunc(func() {
 			defer metrics.MeasureSince([]string{"raft", "candidate", "electSelf"}, time.Now())
 			resp := &voteResult{voterID: peer.ID}
+            // 发起rpc请求
 			err := r.trans.RequestVote(peer.ID, peer.Address, req, &resp.RequestVoteResponse)
 			if err != nil {
 				r.logger.Error("failed to make requestVote RPC",
@@ -1668,29 +1805,36 @@ func (r *Raft) electSelf() <-chan *voteResult {
 				resp.Term = req.Term
 				resp.Granted = false
 			}
+            // 将结果告知
 			respCh <- resp
 		})
 	}
 
 	// For each peer, request a vote
 	for _, server := range r.configurations.latest.Servers {
+        // 有投票权利
 		if server.Suffrage == Voter {
+            // 如果是本节点
 			if server.ID == r.localID {
 				// Persist a vote for ourselves
+                // 持久化自己最新的投票
 				if err := r.persistVote(req.Term, req.Candidate); err != nil {
 					r.logger.Error("failed to persist vote", "error", err)
 					return nil
 				}
 				// Include our own vote
+                // 将投票结果给自己
 				respCh <- &voteResult{
 					RequestVoteResponse: RequestVoteResponse{
 						RPCHeader: r.getRPCHeader(),
 						Term:      req.Term,
 						Granted:   true,
 					},
+                    // 投给自己
 					voterID: r.localID,
 				}
 			} else {
+                // 询问其他server的投票信息
 				askPeer(server)
 			}
 		}
@@ -1747,6 +1891,7 @@ func (r *Raft) pickServer() *Server {
 	var pick *Server
 	var current uint64
 	for _, server := range r.configurations.latest.Servers {
+        // 忽略自己这个节点
 		if server.ID == r.localID {
 			continue
 		}

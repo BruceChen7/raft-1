@@ -97,6 +97,7 @@ func (t *transport) LocalAddr() raft.ServerAddress {
 
 func (t *transport) sendRPC(target string, req interface{}, resp interface{}) error {
 	t.transports.RLock()
+    // 获取节点
 	tt := t.transports.nodes[target]
 	if tt == nil {
 		t.log.Info("sendRPC unknown node", "target", target, "transports", t.transports.nodes)
@@ -110,11 +111,13 @@ func (t *transport) sendRPC(target string, req interface{}, resp interface{}) er
 	if err := codec.NewEncoder(&buff, &codecHandle).Encode(req); err != nil {
 		return err
 	}
+    // 带缓冲的rpc channel
 	rpc := raft.RPC{RespChan: rc}
 	var reqVote raft.RequestVoteRequest
 	var timeoutNow raft.TimeoutNowRequest
 	var appEnt raft.AppendEntriesRequest
 	dec := codec.NewDecoderBytes(buff.Bytes(), &codecHandle)
+    // 根据请求类型来
 	switch req.(type) {
 	case *raft.TimeoutNowRequest:
 		if err := dec.Decode(&timeoutNow); err != nil {
@@ -136,6 +139,7 @@ func (t *transport) sendRPC(target string, req interface{}, resp interface{}) er
 	}
 	var result *raft.RPCResponse
 	if t.hooks != nil {
+        // 在发起rpc调用之前，用来调用
 		if err := t.hooks.PreRPC(t.node, target, &rpc); err != nil {
 			return err
 		}
@@ -153,10 +157,14 @@ func (t *transport) sendRPC(target string, req interface{}, resp interface{}) er
 		}
 	}
 	if result == nil {
+        // 形成一次rpc调用
 		tt.consumer <- rpc
+        // 读取结果
 		cr := <-rc
+        // 返回结果
 		result = &cr
 	}
+    // 用来执行RPC调用之后
 
 	if t.hooks != nil {
 		err := t.hooks.PostRPC(t.node, target, &rpc, result)
@@ -165,7 +173,9 @@ func (t *transport) sendRPC(target string, req interface{}, resp interface{}) er
 		}
 	}
 	buff = bytes.Buffer{}
+    // 编码
 	codec.NewEncoder(&buff, &codecHandle).Encode(result.Response)
+    // 解码
 	codec.NewDecoderBytes(buff.Bytes(), &codecHandle).Decode(resp)
 	return result.Error
 }
@@ -216,6 +226,8 @@ func lastIndex(a *raft.AppendEntriesRequest) uint64 {
 }
 
 // RequestVote sends the appropriate RPC to the target node.
+// 用来发起投票请求
+// id和target都为对方节点
 func (t *transport) RequestVote(id raft.ServerID, target raft.ServerAddress, args *raft.RequestVoteRequest, resp *raft.RequestVoteResponse) error {
 	return t.sendRPC(string(target), args, resp)
 }
@@ -288,6 +300,7 @@ func (e *appendEntry) Error() error {
 func (e *appendEntry) Respond(err error) {
 	e.err = err
 	close(e.ready)
+    // 形成一次rpc调用
 	e.consumer <- e
 }
 

@@ -163,7 +163,7 @@ type Raft struct {
 
 	// stable is a StableStore implementation for durable state
 	// It provides stable storage for many fields in raftState
-    // 稳定存储，用来存储raft节点信息
+    // 稳定存储，用来存储raft log信息
 	stable StableStore
 
 	// The transport layer we use
@@ -505,6 +505,7 @@ func NewRaft(conf *Config, fsm FSM, logs LogStore, stable StableStore, snaps Sna
 		applyCh:               make(chan *logFuture),
 		conf:                  *conf,
 		fsm:                   fsm,
+        // 是一个有buffer的缓存
 		fsmMutateCh:           make(chan interface{}, 128),
 		fsmSnapshotCh:         make(chan *reqSnapshotFuture),
 		leaderCh:              make(chan bool),
@@ -514,6 +515,7 @@ func NewRaft(conf *Config, fsm FSM, logs LogStore, stable StableStore, snaps Sna
 		logs:                  logs,
 		configurationChangeCh: make(chan *configurationChangeFuture),
 		configurations:        configurations{},
+        // 一个rpc请求的Channel
 		rpcCh:                 trans.Consumer(),
 		snapshots:             snaps,
 		userSnapshotCh:        make(chan *userSnapshotFuture),
@@ -567,13 +569,14 @@ func NewRaft(conf *Config, fsm FSM, logs LogStore, stable StableStore, snaps Sna
 	// Setup a heartbeat fast-path to avoid head-of-line
 	// blocking where possible. It MUST be safe for this
 	// to be called concurrently with a blocking RPC.
+    // 处理心跳逻辑，必须在main goroutine中执行
 	trans.SetHeartbeatHandler(r.processHeartbeat)
 
 	if conf.skipStartup {
 		return r, nil
 	}
 	// Start the background work.
-    // 执行不同的
+    // 执行不同的逻辑
 	r.goFunc(r.run)
 	r.goFunc(r.runFSM)
 	r.goFunc(r.runSnapshots)
@@ -701,6 +704,7 @@ func (r *Raft) ApplyLog(log Log, timeout time.Duration) ApplyFuture {
 			Extensions: log.Extensions,
 		},
 	}
+    // 初始化logFuture
 	logFuture.init()
 
 	select {
@@ -749,6 +753,7 @@ func (r *Raft) Barrier(timeout time.Duration) Future {
 func (r *Raft) VerifyLeader() Future {
 	metrics.IncrCounter([]string{"raft", "verify_leader"}, 1)
 	verifyFuture := &verifyFuture{}
+    // 初始化future
 	verifyFuture.init()
 	select {
 	case <-r.shutdownCh:
@@ -972,6 +977,7 @@ func (r *Raft) State() RaftState {
 // the leader, and false if we lose it. The channel is not buffered,
 // and does not block on writes.
 func (r *Raft) LeaderCh() <-chan bool {
+    // 查看自己是否是channel
 	return r.leaderCh
 }
 
@@ -1123,5 +1129,6 @@ func (r *Raft) LeadershipTransferToServer(id ServerID, address ServerAddress) Fu
 		return errorFuture{ErrUnsupportedProtocol}
 	}
 
+    // 转移leadership
 	return r.initiateLeadershipTransfer(&id, &address)
 }

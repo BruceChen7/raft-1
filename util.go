@@ -91,6 +91,7 @@ func drainNotifyCh(ch chan struct{}) bool {
 // on a bool channel.
 func asyncNotifyBool(ch chan bool, v bool) {
 	select {
+    // 写到channel中
 	case ch <- v:
 	default:
 	}

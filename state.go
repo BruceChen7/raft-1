@@ -63,6 +63,7 @@ type raftState struct {
 	lastSnapshotTerm  uint64
 
 	// Cache the latest log from LogStore
+    // 本地已经存储的日志index和任期
 	lastLogIndex uint64
 	lastLogTerm  uint64
 
@@ -74,6 +75,7 @@ type raftState struct {
 }
 
 func (r *raftState) getState() RaftState {
+    // 获取节点运行状态
 	stateAddr := (*uint32)(&r.state)
 	return RaftState(atomic.LoadUint32(stateAddr))
 }
@@ -101,6 +103,7 @@ func (r *raftState) getLastLog() (index, term uint64) {
 
 func (r *raftState) setLastLog(index, term uint64) {
 	r.lastLock.Lock()
+    // 已经提交到本地存储的
 	r.lastLogIndex = index
 	r.lastLogTerm = term
 	r.lastLock.Unlock()
@@ -166,6 +169,7 @@ func (r *raftState) getLastIndex() uint64 {
 func (r *raftState) getLastEntry() (uint64, uint64) {
 	r.lastLock.Lock()
 	defer r.lastLock.Unlock()
+    // 取最新的
 	if r.lastLogIndex >= r.lastSnapshotIndex {
 		return r.lastLogIndex, r.lastLogTerm
 	}
