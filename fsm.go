@@ -85,9 +85,10 @@ func (r *Raft) runFSM() {
 		}()
 
 		switch req.log.Type {
-         // 请求的
+         // 请求的是日志类型
 		case LogCommand:
 			start := time.Now()
+            // 直接应用日志
 			resp = r.fsm.Apply(req.log)
 			metrics.MeasureSince([]string{"raft", "fsm", "apply"}, start)
 
@@ -109,6 +110,7 @@ func (r *Raft) runFSM() {
 	}
 
 	commitBatch := func(reqs []*commitTuple) {
+        // 不支持批量，一个个提交
 		if !batchingEnabled {
 			for _, ct := range reqs {
 				commitSingle(ct)
@@ -202,6 +204,7 @@ func (r *Raft) runFSM() {
 
 		// Start a snapshot
 		start := time.Now()
+        // 状态机器snapshot
 		snap, err := r.fsm.Snapshot()
 		metrics.MeasureSince([]string{"raft", "fsm", "snapshot"}, start)
 
@@ -214,10 +217,11 @@ func (r *Raft) runFSM() {
 
 	for {
 		select {
-        //  获取
+        //  获取内容
 		case ptr := <-r.fsmMutateCh:
 			switch req := ptr.(type) {
 			case []*commitTuple:
+                // 批量提交
 				commitBatch(req)
 
 			case *restoreFuture:
@@ -228,6 +232,7 @@ func (r *Raft) runFSM() {
 			}
 
 		case req := <-r.fsmSnapshotCh:
+            // 进行 快照
 			snapshot(req)
 
 		case <-r.shutdownCh:
